@@ -24,6 +24,7 @@ func TestRegression_TotalsAreTypedAsCounters(t *testing.T) {
 		"# TYPE gateway_messages_published_total counter",
 		"# TYPE gateway_parse_errors_total counter",
 		"# TYPE gateway_reconnects_total counter",
+		"# TYPE gateway_publish_errors_total counter",
 	}
 	for _, want := range counters {
 		if !strings.Contains(out, want) {

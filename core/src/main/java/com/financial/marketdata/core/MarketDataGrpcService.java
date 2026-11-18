@@ -10,6 +10,7 @@ import io.grpc.stub.ServerCallStreamObserver;
 
 import java.util.Locale;
 import java.util.Objects;
+import java.util.logging.Logger;
 
 /**
  * Implementação do {@code MarketDataService.StreamTicker} (Server-Side
@@ -24,15 +25,31 @@ import java.util.Objects;
  *       (VWAP) e emitidos ao fim de cada janela.</li>
  * </ul>
  *
- * <p>O stream fica aberto indefinidamente; o cliente cancela para encerrar.
- * Backpressure é propagado pelo HTTP/2 flow control quando o consumidor é lento.
+ * <p>Backpressure: cada assinatura tem uma fila limitada
+ * ({@value StreamSession#DEFAULT_CAPACITY} por default). Quando o cliente não
+ * drena rápido o bastante e a fila enche, o cliente é desconectado com
+ * {@code RESOURCE_EXHAUSTED} e a subscription para. O consumidor nunca trava;
+ * clientes lentos são isolados — nunca há descarte silencioso nem vazamento
+ * de trades. A drenagem obedece o HTTP/2 flow control ({@code isReady()}).
  */
 public final class MarketDataGrpcService extends MarketDataServiceGrpc.MarketDataServiceImplBase {
 
+    private static final Logger LOGGER = Logger.getLogger(MarketDataGrpcService.class.getName());
+
     private final TradeSource source;
+    private final int queueCapacity;
 
     public MarketDataGrpcService(TradeSource source) {
+        this(source, StreamSession.DEFAULT_CAPACITY);
+    }
+
+    /** Capacidade da fila por assinatura — overload para testes. */
+    public MarketDataGrpcService(TradeSource source, int queueCapacity) {
         this.source = Objects.requireNonNull(source, "source");
+        if (queueCapacity <= 0) {
+            throw new IllegalArgumentException("queueCapacity must be > 0");
+        }
+        this.queueCapacity = queueCapacity;
     }
 
     @Override
@@ -52,41 +69,38 @@ public final class MarketDataGrpcService extends MarketDataServiceGrpc.MarketDat
 
         ServerCallStreamObserver<TickerResponse> serverObserver =
                 (ServerCallStreamObserver<TickerResponse>) responseObserver;
+        StreamSession session = new StreamSession(serverObserver, queueCapacity);
 
-        // Serializa onNext: uma janela de agregação pode ser despachada por
-        // outra thread que não a do TradeSource.
-        Object writeLock = new Object();
         TradeAggregator aggregator = intervalMs > 0
-                ? new TradeAggregator(symbol, intervalMs, trade -> emit(serverObserver, writeLock, trade))
+                ? new TradeAggregator(symbol, intervalMs, session::enqueue)
                 : null;
 
         TradeSource.Subscription subscription = source.subscribe(symbol, trade -> {
             if (aggregator != null) {
                 aggregator.accept(trade);
             } else {
-                emit(serverObserver, writeLock, trade);
+                session.enqueue(trade);
             }
         });
 
-        serverObserver.setOnCancelHandler(() -> {
+        // Handlers antes de liberar tráfego; teardown libera subscription+aggregator
+        session.setOnTeardown(() -> {
             subscription.close();
             if (aggregator != null) {
                 aggregator.close();
             }
         });
-        serverObserver.setOnReadyHandler(() -> { /* backpressure é aplicado pelo HTTP/2 flow control */ });
-    }
+        serverObserver.setOnCancelHandler(() -> {
+            subscription.close();
+            if (aggregator != null) {
+                aggregator.close();
+            }
+            session.close();
+            LOGGER.info("client cancelled stream for " + symbol);
+        });
+        serverObserver.setOnReadyHandler(session::drain);
 
-    private static void emit(ServerCallStreamObserver<TickerResponse> observer, Object lock, TickerResponse trade) {
-        synchronized (lock) {
-            if (observer.isCancelled()) {
-                return;
-            }
-            try {
-                observer.onNext(trade);
-            } catch (RuntimeException e) {
-                // Cliente desconectou entre o isCancelled() e o onNext(); nada a fazer.
-            }
-        }
+        // Se o cliente já estiver pronto, drena imediatamente o que já estiver enfileirado
+        session.drain();
     }
 }

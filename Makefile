@@ -39,6 +39,9 @@ gateway: ## roda o gateway (BTCUSDT,ETHUSDT, métricas em :9090)
 gateway-kafka: ## sobe o gateway publicando no tópico market.trades
 	go run ./cmd/gateway --symbols BTCUSDT,ETHUSDT --metrics-addr :9090 --kafka-brokers localhost:9092 --kafka-topic market.trades
 
+loadprobe: ## soak test: gera carga sintética no market.trades (500 msg/s por 10s)
+	go run ./cmd/loadprobe --symbol LOADTEST --rate 500 --duration 10s
+
 core: ## empacota e roda o serviço core gRPC (Fase 1, fonte simulada)
 	cd core && mvn -q -B -DskipTests package && java -jar target/core-1.0.0-SNAPSHOT.jar --port 50051
 

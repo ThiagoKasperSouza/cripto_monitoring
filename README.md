@@ -20,6 +20,7 @@ proto/market_data.proto     # contrato único (fonte de verdade)
 v1/                         # bindings Go gerados (protoc-gen-go)
 cmd/gateway/                # gateway de aquisição (Go)
 cmd/coreprobe/              # cliente gRPC de smoke test (Go → Java)
+cmd/loadprobe/              # gerador de carga sintética (soak test do caminho Kafka)
 internal/binance/           # cliente WS + backoff/jitter
 internal/normalizer/        # JSON Binance → TickerResponse (validação)
 internal/publisher/         # sink dos trades (stdout + Kafka/Redpanda)
@@ -75,13 +76,28 @@ Notas de design:
 - **Falha do Redis**: consumidor faz *fail-open* — aceita o evento e loga
   warning (1 por 5s) ao invés de congelar os dashboards. Decisão documentada
   no javadoc de `RedisDedupStore`; inverta para fail-closed se preferir.
-- **Backpressure end-to-end** (cliente gRPC lento → HTTP/2 → gRPC buffer →
-  fonte): hoje a fonte drena o Kafka sem propagar lentidão até o consumer.
-  Mitigação parcial: retenção 24h no tópico + consumer lag visível; melhoria
-  definitiva entra na Fase 3 (per-call ready handlers + bounded buffer).
-- Teste de **carga/soak** formal e validação sob picos de volatilidade ainda
-  não foi feito (a resiliência a quedas do WS está coberta por testes de
-  reconexão do gateway).
+  Verificado ao vivo: Redis derrubado → warnings chegam e trades continuam
+  fluindo; Redis restaurado → warnings param, dedup volta a gravar (TTL
+  continua valendo).
+- **Backpressure end-to-end** (cliente gRPC lento → HTTP/2 → buffer gRPC →
+  fonte): cada assinatura `StreamTicker` tem uma fila bounded
+  (1024 trades por default, configurável). Cliente lento e fila cheia →
+  o cliente é **desconectado com `RESOURCE_EXHAUSTED`** e a subscription é
+  derrubada; o consumidor nunca trava, nunca há descarte silencioso nem
+  crescimento ilimitado de memória; clientes rápidos não são afetados.
+  Drenagem obedece o HTTP/2 flow control (`isReady()`); quando a janela
+  abre, o `onReadyHandler` drena a fila em ordem. Ver `StreamSession` e
+  `StreamSessionTest`.
+- **Falha do Kafka**: o poll loop trata exceções transitórias como retry
+  (log + backoff de 1ms~500ms); rebalances são registrados (log + contador)
+  e a entrega continua. Testes com `FakeConsumer` (sem broker) cobrem:
+  falhas transitórias consecutivas, rebalance 2 partições → 1 partição,
+  close rápido do loop e dedup compartilhada entre consumers.
+- **Soak test**: `go run ./cmd/loadprobe --symbol LOADTEST --rate 400 --duration 12s`
+  produziu **4800 mensagens a 400 msg/s, 0 falhas**; o core consumiu e
+  deduplicou todas (4800 chaves `dedup:trade:LOADTEST:*` no Redis), lag do
+  grupo ≈ 0s após drenar, e `coreprobe` recebeu 100 trades ao vivo durante a
+  produção. Catch-up de backlog: **4371 msgs em 8s** (partição 2).
 
 ## Pré-requisitos
 
@@ -147,12 +163,21 @@ Cobertura automatizada atual (Fase 1 + Fase 2):
 | | `TradeAggregatorTest` | VWAP exato da janela, janela vazia não emite, janelas separadas geram buckets separados |
 | | `RegressionTest` | Regressão: mensagens top-level em `com.financial.marketdata.v1` (falta de `java_multiple_files` quebrou todo o compile); classe externa `MarketData` sem mensagens aninhadas |
 | | `KafkaTradeSourceTest` | `handleRecord` sem broker: desserialização protobuf, dedup (1ª aceita/2ª descartada), `trade_id` igual em símbolos distintos **não** é duplicata, payload inválido descartado, fallback de symbol pela payload quando key nula |
+| | `KafkaTradeSourceFailureTest` | `FakeConsumer` sem broker: **falhas transitórias consecutivas no poll** (TimeoutException/NotLeaderOrFollower) mantêm o loop vivo e entregam; **rebalance** 2→1 partições mantém a entrega; close rápido do loop; **dedup compartilhada entre consumers** |
 | | `InMemoryDedupStoreTest` | `markProcessed` idempotente, TTL expira, teto de entradas (FIFO determinístico por sequência), escopo por símbolo |
 | | `RedisDedupStoreTest` | Contra Redis real (`SET NX PX` + TTL). **Gated por env** `REDIS_ADDR` (ex: `REDIS_ADDR=localhost:6379 make test-java`); sem a env, os testes são pulados — CI não sobe Redis |
+| | `StreamSessionTest` | Fila bounded por cliente: lento e cheio → `RESOURCE_EXHAUSTED` + teardown; ready drena em ordem; flip de `isReady` dispara o drain via handler; enqueue após disconnect é ignorado |
 
-Total Java: **27 testes**. Não cobertos (dependem de ambiente real): entrega
-efetiva na Binance (smoke manual, ver README), carga/rate limit e falhas do
-Kafka (ex: `NotLeaderOrFollower`, rebalance de partições em grupo).
+Total Java: **36 testes**. Resiliência validada ao vivo (ver seção Fase 2):
+Redis derrubado → fail-open + recovery; Redpanda derrubado durante o publish
+→ produção bloqueia no ack (sem perda) e retoma no restart; soak de 4800
+mensagens @400/s com lag ≈ 0 e catch-up de 4371 msgs em 8s.
+
+Ainda não cobertos: cliente lento **real** sobre gRPC/HTTP-2 (o disconnect
+por fila cheia é coberto deterministicamente por `StreamSessionTest`, não por
+e2e); falhas de Kafka reais de broker (kill do líder, rebalance por
+membership real — o `FakeConsumer` simula as classes de exceção, não o
+protocolo de grupo de verdade); teste de carga além de 400 msg/s.
 
 ## CI/CD
 

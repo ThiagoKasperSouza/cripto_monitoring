@@ -2,23 +2,30 @@ package com.financial.marketdata.core.source;
 
 import com.financial.marketdata.core.dedup.DedupStore;
 import com.financial.marketdata.v1.TickerResponse;
+import java.util.function.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
+import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Consumer;
+
+import java.util.function.Supplier;
 import java.util.logging.Logger;
 
 /**
@@ -53,15 +60,46 @@ public final class KafkaTradeSource implements TradeSource {
     private final AtomicLong parseErrors = new AtomicLong();
     private final AtomicLong dispatched = new AtomicLong();
 
+    private final Supplier<org.apache.kafka.clients.consumer.Consumer<String, byte[]>> consumerFactory;
+    private final long pollRetryDelayMs;
+
     private volatile boolean closed = false;
-    private KafkaConsumer<String, byte[]> consumer;
+    private org.apache.kafka.clients.consumer.Consumer<String, byte[]> consumer;
     private Thread pollThread;
 
+    private final AtomicLong rebalanceCount = new AtomicLong();
+    private volatile Set<TopicPartition> assignedPartitions = Set.of();
+
     public KafkaTradeSource(String bootstrapServers, String topic, String groupId, DedupStore dedup) {
+        this(bootstrapServers, topic, groupId, dedup, null, 500);
+    }
+
+    /**
+     * Overload para testes: injeta a factory do consumer e o delay de retry
+     * entre polls com falha (default 500ms), permitindo falhas transitórias
+     * determinísticas sem broker.
+     */
+    KafkaTradeSource(String bootstrapServers, String topic, String groupId, DedupStore dedup,
+                     Supplier<org.apache.kafka.clients.consumer.Consumer<String, byte[]>> consumerFactory, long pollRetryDelayMs) {
         this.bootstrapServers = bootstrapServers;
         this.topic = topic;
         this.groupId = groupId;
         this.dedup = dedup;
+        this.consumerFactory = consumerFactory != null ? consumerFactory : this::defaultConsumer;
+        this.pollRetryDelayMs = pollRetryDelayMs;
+    }
+
+    private org.apache.kafka.clients.consumer.Consumer<String, byte[]> defaultConsumer() {
+        Properties props = new Properties();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,
+                OffsetResetStrategy.EARLIEST.name().toLowerCase());
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, true);
+        props.put(ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG, 1000);
+        return new KafkaConsumer<>(props);
     }
 
     @Override
@@ -69,18 +107,22 @@ public final class KafkaTradeSource implements TradeSource {
         synchronized (this) {
             if (pollThread != null) return;
 
-            Properties props = new Properties();
-            props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-            props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
-            props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-            props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
-            props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,
-                    OffsetResetStrategy.EARLIEST.name().toLowerCase());
-            props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, true);
-            props.put(ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG, 1000);
+            consumer = consumerFactory.get();
+            consumer.subscribe(List.of(topic), new ConsumerRebalanceListener() {
+                @Override
+                public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
+                    rebalanceCount.incrementAndGet();
+                    assignedPartitions = Set.of();
+                    LOGGER.info("partitions revoked: " + partitions);
+                }
 
-            consumer = new KafkaConsumer<>(props);
-            consumer.subscribe(List.of(topic));
+                @Override
+                public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+                    rebalanceCount.incrementAndGet();
+                    assignedPartitions = Set.copyOf(partitions);
+                    LOGGER.info("partitions assigned: " + partitions);
+                }
+            });
 
             pollThread = new Thread(this::pollLoop, "kafka-trade-source");
             pollThread.setDaemon(true);
@@ -98,10 +140,17 @@ public final class KafkaTradeSource implements TradeSource {
                     consumed.incrementAndGet();
                     handleRecord(record.key(), record.value());
                 }
-            } catch (Exception e) {
+            } catch (WakeupException e) {
+                // wakeup() vindo de close(): sai sem barulho
                 if (!closed) {
-                    LOGGER.warning("poll error: " + e);
-                    sleepQuietly(500);
+                    LOGGER.warning("unexpected consumer wakeup: " + e);
+                }
+            } catch (Exception e) {
+                // Falhas transitórias (Timeout, NotLeaderOrFollower, ...):
+                // loga, espera e continua o loop — o consumer se auto-recupera no próximo poll.
+                if (!closed) {
+                    LOGGER.warning("poll error (retry in " + pollRetryDelayMs + "ms): " + e);
+                    sleepQuietly(pollRetryDelayMs);
                 }
             }
         }
@@ -159,6 +208,12 @@ public final class KafkaTradeSource implements TradeSource {
     public long duplicatesDropped() { return duplicatesDropped.get(); }
     public long parseErrors() { return parseErrors.get(); }
     public long dispatched() { return dispatched.get(); }
+
+    /** Rebalanceamentos observados (revoked+assigned) desde o start. */
+    public long rebalanceCount() { return rebalanceCount.get(); }
+
+    /** Partições atualmente atribuídas (após o último rebalance). */
+    public Set<TopicPartition> assignedPartitions() { return assignedPartitions; }
 
     @Override
     public void close() {

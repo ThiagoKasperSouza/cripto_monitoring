@@ -168,6 +168,7 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) error {
 		c.metrics.SetLastEventTimeMs(trade.GetEventTime())
 
 		if err := c.publisher.Publish(ctx, trade); err != nil {
+			c.metrics.PublishErrors()
 			c.logger.Error("publish failed", "error", err, "symbol", trade.GetSymbol(), "trade_id", trade.GetTradeId())
 			continue
 		}

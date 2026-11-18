@@ -14,6 +14,7 @@ func TestCountersAppearInPrometheusFormat(t *testing.T) {
 	r.MessagesPublished()
 	r.ParseErrors()
 	r.Reconnects()
+	r.PublishErrors()
 	r.SetConnected(true)
 	r.SetLastEventTimeMs(1730000000000)
 
@@ -32,6 +33,7 @@ func TestCountersAppearInPrometheusFormat(t *testing.T) {
 		"gateway_messages_published_total 1",
 		"gateway_parse_errors_total 1",
 		"gateway_reconnects_total 1",
+		"gateway_publish_errors_total 1",
 		"gateway_ws_connected 1",
 		"gateway_last_event_time_ms 1730000000000",
 	}

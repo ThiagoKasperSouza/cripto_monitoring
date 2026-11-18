@@ -15,12 +15,13 @@ import (
 
 // Registry is a simple atomic counter/gauge store.
 type Registry struct {
-	messagesReceived atomic.Int64
+	messagesReceived  atomic.Int64
 	messagesPublished atomic.Int64
-	parseErrors      atomic.Int64
-	reconnects       atomic.Int64
-	wsConnected      atomic.Int64
-	lastEventTimeMs  atomic.Int64
+	parseErrors       atomic.Int64
+	reconnects        atomic.Int64
+	publishErrors     atomic.Int64
+	wsConnected       atomic.Int64
+	lastEventTimeMs   atomic.Int64
 }
 
 func NewRegistry() *Registry { return &Registry{} }
@@ -29,6 +30,7 @@ func (r *Registry) MessagesReceived()  { r.messagesReceived.Add(1) }
 func (r *Registry) MessagesPublished() { r.messagesPublished.Add(1) }
 func (r *Registry) ParseErrors()       { r.parseErrors.Add(1) }
 func (r *Registry) Reconnects()        { r.reconnects.Add(1) }
+func (r *Registry) PublishErrors()     { r.publishErrors.Add(1) }
 func (r *Registry) SetConnected(v bool) {
 	if v {
 		r.wsConnected.Store(1)
@@ -62,6 +64,7 @@ var metricKinds = []metricKind{
 	{"gateway_messages_published_total", "counter"},
 	{"gateway_parse_errors_total", "counter"},
 	{"gateway_reconnects_total", "counter"},
+	{"gateway_publish_errors_total", "counter"},
 	{"gateway_ws_connected", "gauge"},
 	{"gateway_last_event_time_ms", "gauge"},
 }
@@ -72,6 +75,7 @@ func (r *Registry) render() string {
 		"gateway_messages_published_total": r.messagesPublished.Load(),
 		"gateway_parse_errors_total":       r.parseErrors.Load(),
 		"gateway_reconnects_total":         r.reconnects.Load(),
+		"gateway_publish_errors_total":     r.publishErrors.Load(),
 		"gateway_ws_connected":             r.wsConnected.Load(),
 		"gateway_last_event_time_ms":       r.lastEventTimeMs.Load(),
 	}
