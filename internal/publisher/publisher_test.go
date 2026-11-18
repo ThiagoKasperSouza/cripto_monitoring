@@ -37,10 +37,10 @@ func TestLogPublisherEmitsValidJSONLine(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
 	checks := map[string]any{
-		"kind":      "trade",
-		"symbol":    "BTCUSDT",
-		"price":     "97234.56",
-		"trade_id":  float64(424242), // encoding/json números viram float64
+		"kind":       "trade",
+		"symbol":     "BTCUSDT",
+		"price":      "97234.56",
+		"trade_id":   float64(424242), // encoding/json números viram float64
 		"event_time": float64(1730000000000),
 	}
 	for k, want := range checks {

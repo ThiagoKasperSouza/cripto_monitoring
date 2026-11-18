@@ -1,90 +1,111 @@
-// Package metrics provides a minimal, dependency-free metrics registry for
-// the gateway. It exposes counters/gauges in Prometheus text exposition
-// format on an HTTP endpoint (default :9090/metrics).
+// Package metrics exposes the gateway's operational metrics in Prometheus
+// text exposition format on an HTTP endpoint (default :9090/metrics).
 //
-// Phase 3 will replace this with the official prometheus/client_golang
-// client; the metric names are already chosen to be compatible.
+// Fase 3: backed by the official prometheus/client_golang, including
+// histograms used for p50/p95/p99(9) latency panels in Grafana.
 package metrics
 
 import (
 	"fmt"
 	"net/http"
-	"strings"
-	"sync/atomic"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// Registry is a simple atomic counter/gauge store.
+// Registry groups all gateway collectors. It is safe for concurrent use.
 type Registry struct {
-	messagesReceived  atomic.Int64
-	messagesPublished atomic.Int64
-	parseErrors       atomic.Int64
-	reconnects        atomic.Int64
-	publishErrors     atomic.Int64
-	wsConnected       atomic.Int64
-	lastEventTimeMs   atomic.Int64
+	registry *prometheus.Registry
+
+	messagesReceived  prometheus.Counter
+	messagesPublished prometheus.Counter
+	parseErrors       prometheus.Counter
+	reconnects        prometheus.Counter
+	publishErrors     prometheus.Counter
+
+	wsConnected     prometheus.Gauge
+	lastEventTimeMs prometheus.Gauge
+
+	publishLatencyMs prometheus.Histogram
+	eventAgeMs       prometheus.Histogram
 }
 
-func NewRegistry() *Registry { return &Registry{} }
+func NewRegistry() *Registry {
+	latencyBuckets := []float64{0.1, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000}
+	r := &Registry{
+		registry: prometheus.NewRegistry(),
+		messagesReceived: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "gateway_messages_received_total",
+			Help: "Trades recebidos do WebSocket da Binance.",
+		}),
+		messagesPublished: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "gateway_messages_published_total",
+			Help: "Trades publicados com sucesso no barramento (Kafka/Redpanda ou stdout).",
+		}),
+		parseErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "gateway_parse_errors_total",
+			Help: "Frames malformados ou trades inválidos descartados.",
+		}),
+		reconnects: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "gateway_reconnects_total",
+			Help: "Tentativas de reconexão com a Binance.",
+		}),
+		publishErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "gateway_publish_errors_total",
+			Help: "Falhas ao publicar no barramento.",
+		}),
+		wsConnected: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "gateway_ws_connected",
+			Help: "1 quando o WebSocket com a Binance está conectado, 0 caso contrário.",
+		}),
+		lastEventTimeMs: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "gateway_last_event_time_ms",
+			Help: "event_time do último trade processado (ms UTC).",
+		}),
+		publishLatencyMs: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "gateway_publish_latency_ms",
+			Help:    "Latência de publicação no barramento (ms) — ack de broker.",
+			Buckets: latencyBuckets,
+		}),
+		eventAgeMs: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "gateway_event_age_ms",
+			Help:    "Idade do evento da exchange no momento da publicação (now - event_time).",
+			Buckets: latencyBuckets,
+		}),
+	}
+	r.registry.MustRegister(
+		r.messagesReceived, r.messagesPublished, r.parseErrors, r.reconnects, r.publishErrors,
+		r.wsConnected, r.lastEventTimeMs, r.publishLatencyMs, r.eventAgeMs,
+	)
+	return r
+}
 
-func (r *Registry) MessagesReceived()  { r.messagesReceived.Add(1) }
-func (r *Registry) MessagesPublished() { r.messagesPublished.Add(1) }
-func (r *Registry) ParseErrors()       { r.parseErrors.Add(1) }
-func (r *Registry) Reconnects()        { r.reconnects.Add(1) }
-func (r *Registry) PublishErrors()     { r.publishErrors.Add(1) }
+func (r *Registry) MessagesReceived()                { r.messagesReceived.Inc() }
+func (r *Registry) MessagesPublished()               { r.messagesPublished.Inc() }
+func (r *Registry) ParseErrors()                     { r.parseErrors.Inc() }
+func (r *Registry) Reconnects()                      { r.reconnects.Inc() }
+func (r *Registry) PublishErrors()                   { r.publishErrors.Inc() }
+func (r *Registry) ObservePublishLatency(ms float64) { r.publishLatencyMs.Observe(ms) }
+func (r *Registry) ObserveEventAge(ms float64)       { r.eventAgeMs.Observe(ms) }
+
 func (r *Registry) SetConnected(v bool) {
 	if v {
-		r.wsConnected.Store(1)
+		r.wsConnected.Set(1)
 	} else {
-		r.wsConnected.Store(0)
+		r.wsConnected.Set(0)
 	}
 }
-func (r *Registry) SetLastEventTimeMs(v int64) { r.lastEventTimeMs.Store(v) }
 
-// Handler returns an http.Handler exposing /metrics in Prometheus text format.
+func (r *Registry) SetLastEventTimeMs(v int64) { r.lastEventTimeMs.Set(float64(v)) }
+
+// Handler returns an http.Handler exposing /metrics (Prometheus format) and
+// /healthz.
 func (r *Registry) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		fmt.Fprint(w, r.render())
-	})
+	mux.Handle("/metrics", promhttp.HandlerFor(r.registry, promhttp.HandlerOpts{}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		_, _ = fmt.Fprint(w, "ok")
 	})
 	return mux
-}
-
-type metricKind struct {
-	name string
-	kind string // "counter" or "gauge", per Prometheus exposition format
-}
-
-var metricKinds = []metricKind{
-	{"gateway_messages_received_total", "counter"},
-	{"gateway_messages_published_total", "counter"},
-	{"gateway_parse_errors_total", "counter"},
-	{"gateway_reconnects_total", "counter"},
-	{"gateway_publish_errors_total", "counter"},
-	{"gateway_ws_connected", "gauge"},
-	{"gateway_last_event_time_ms", "gauge"},
-}
-
-func (r *Registry) render() string {
-	values := map[string]int64{
-		"gateway_messages_received_total":  r.messagesReceived.Load(),
-		"gateway_messages_published_total": r.messagesPublished.Load(),
-		"gateway_parse_errors_total":       r.parseErrors.Load(),
-		"gateway_reconnects_total":         r.reconnects.Load(),
-		"gateway_publish_errors_total":     r.publishErrors.Load(),
-		"gateway_ws_connected":             r.wsConnected.Load(),
-		"gateway_last_event_time_ms":       r.lastEventTimeMs.Load(),
-	}
-	// Regression (Fase 1): *_total metrics were exposed as `gauge`.
-	// Prometheus clients treat *_total as counters; the TYPE line must say
-	// counter or rate()/increase() queries silently misbehave.
-	var sb strings.Builder
-	for _, m := range metricKinds {
-		fmt.Fprintf(&sb, "# TYPE %s %s\n%s %d\n", m.name, m.kind, m.name, values[m.name])
-	}
-	return sb.String()
 }

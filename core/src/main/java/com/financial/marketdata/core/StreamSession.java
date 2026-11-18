@@ -37,6 +37,9 @@ final class StreamSession {
     /** Chamado quando o cliente é desconectado por lentidão (para derrubar subscription/aggregator). */
     private volatile Runnable onTeardown;
 
+    /** Callback opcional chamado quando a sessão é desconectada por fila cheia (métricas). */
+    private volatile Runnable onSlowClientDisconnect;
+
     StreamSession(ServerCallStreamObserver<TickerResponse> observer) {
         this(observer, DEFAULT_CAPACITY);
     }
@@ -52,6 +55,11 @@ final class StreamSession {
 
     void setOnTeardown(Runnable onTeardown) {
         this.onTeardown = onTeardown;
+    }
+
+    /** Define um callback chamado exatamente uma vez quando o cliente é desconectado por fila cheia. */
+    void setOnSlowClientDisconnect(Runnable onSlowClientDisconnect) {
+        this.onSlowClientDisconnect = onSlowClientDisconnect;
     }
 
     /**
@@ -112,6 +120,14 @@ final class StreamSession {
                     teardown.run();
                 } catch (Exception e) {
                     LOGGER.warning("teardown of slow client failed: " + e);
+                }
+            }
+            Runnable slowClient = onSlowClientDisconnect;
+            if (slowClient != null) {
+                try {
+                    slowClient.run();
+                } catch (Exception e) {
+                    LOGGER.warning("slow-client callback failed: " + e);
                 }
             }
         }

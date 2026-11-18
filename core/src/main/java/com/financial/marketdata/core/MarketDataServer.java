@@ -3,6 +3,7 @@ package com.financial.marketdata.core;
 import com.financial.marketdata.core.dedup.DedupStore;
 import com.financial.marketdata.core.dedup.InMemoryDedupStore;
 import com.financial.marketdata.core.dedup.RedisDedupStore;
+import com.financial.marketdata.core.metrics.CoreMetrics;
 import com.financial.marketdata.core.source.KafkaTradeSource;
 import com.financial.marketdata.core.source.SimulatedTradeSource;
 import com.financial.marketdata.core.source.TradeSource;
@@ -38,6 +39,7 @@ import java.util.logging.Logger;
  *   <li>{@code --group} — consumer group. Default market-data-core.</li>
  *   <li>{@code --dedup} — {@code redis} ou {@code memory} (default).</li>
  *   <li>{@code --redis-addr} — host:port do Redis. Default localhost:6379.</li>
+ *   <li>{@code --metrics-port} — porta do endpoint Prometheus /metrics. Default 8081; {@code 0} desabilita.</li>
  *   <li>{@code --dedup-ttl-ms} — TTL da chave {symbol}:{trade_id}. Default 300000 (5min).</li>
  * </ul>
  */
@@ -50,7 +52,12 @@ public final class MarketDataServer {
     public static void main(String[] args) throws IOException, InterruptedException {
         Map<String, String> opts = parseArgs(args);
         int port = Integer.parseInt(opts.getOrDefault("port", System.getenv().getOrDefault("PORT", "50051")));
+        int metricsPort = Integer.parseInt(opts.getOrDefault("metrics-port", "8081"));
         String sourceType = opts.getOrDefault("source", "simulated");
+
+        if (metricsPort > 0) {
+            CoreMetrics.startHttpServer(metricsPort);
+        }
 
         TradeSource source = buildSource(sourceType, opts);
         source.start();

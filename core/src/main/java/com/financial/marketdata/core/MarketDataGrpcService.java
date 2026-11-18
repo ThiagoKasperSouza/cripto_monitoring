@@ -1,6 +1,7 @@
 package com.financial.marketdata.core;
 
 import com.financial.marketdata.core.source.TradeSource;
+import com.financial.marketdata.core.metrics.CoreMetrics;
 import com.financial.marketdata.v1.MarketDataServiceGrpc;
 import com.financial.marketdata.v1.TickerRequest;
 import com.financial.marketdata.v1.TickerResponse;
@@ -10,6 +11,7 @@ import io.grpc.stub.ServerCallStreamObserver;
 
 import java.util.Locale;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
 
 /**
@@ -71,6 +73,14 @@ public final class MarketDataGrpcService extends MarketDataServiceGrpc.MarketDat
                 (ServerCallStreamObserver<TickerResponse>) responseObserver;
         StreamSession session = new StreamSession(serverObserver, queueCapacity);
 
+        AtomicBoolean released = new AtomicBoolean(false);
+        Runnable releaseStream = () -> {
+            if (released.compareAndSet(false, true)) {
+                CoreMetrics.streamClosed();
+            }
+        };
+        CoreMetrics.streamOpened();
+
         TradeAggregator aggregator = intervalMs > 0
                 ? new TradeAggregator(symbol, intervalMs, session::enqueue)
                 : null;
@@ -90,12 +100,18 @@ public final class MarketDataGrpcService extends MarketDataServiceGrpc.MarketDat
                 aggregator.close();
             }
         });
+        // Cliente lento desconectado pela fila bounded: métrica + encerra o gauge
+        session.setOnSlowClientDisconnect(() -> {
+            CoreMetrics.slowClientDisconnects();
+            releaseStream.run();
+        });
         serverObserver.setOnCancelHandler(() -> {
             subscription.close();
             if (aggregator != null) {
                 aggregator.close();
             }
             session.close();
+            releaseStream.run();
             LOGGER.info("client cancelled stream for " + symbol);
         });
         serverObserver.setOnReadyHandler(session::drain);

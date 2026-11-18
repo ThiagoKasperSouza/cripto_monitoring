@@ -39,14 +39,14 @@ func NewLogPublisher(w io.Writer) Publisher {
 
 func (p *logPublisher) Publish(_ context.Context, trade *marketdatav1.TickerResponse) error {
 	line, err := json.Marshal(map[string]any{
-		"kind":                "trade",
-		"symbol":              trade.GetSymbol(),
-		"price":               trade.GetPrice(),
-		"quantity":            trade.GetQuantity(),
-		"event_time":          trade.GetEventTime(),
-		"trade_id":            trade.GetTradeId(),
-		"buyer_order_id":      trade.GetBuyerOrderId(),
-		"seller_order_id":     trade.GetSellerOrderId(),
+		"kind":                  "trade",
+		"symbol":                trade.GetSymbol(),
+		"price":                 trade.GetPrice(),
+		"quantity":              trade.GetQuantity(),
+		"event_time":            trade.GetEventTime(),
+		"trade_id":              trade.GetTradeId(),
+		"buyer_order_id":        trade.GetBuyerOrderId(),
+		"seller_order_id":       trade.GetSellerOrderId(),
 		"is_buyer_market_maker": trade.GetIsBuyerMarketMaker(),
 	})
 	if err != nil {

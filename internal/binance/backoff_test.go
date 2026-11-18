@@ -28,7 +28,7 @@ func TestBackoffJitterStaysWithinBounds(t *testing.T) {
 	b := NewBackoffWithRand(200*time.Millisecond, 10*time.Second, 2.0, func() float64 { return 0.999999 })
 	for i := 0; i < 20; i++ {
 		got := b.Next()
-		cap := float64(b.Base) * float64(int(1) << uint(i))
+		cap := float64(b.Base) * float64(int(1)<<uint(i))
 		if cap > float64(b.Max) {
 			cap = float64(b.Max)
 		}

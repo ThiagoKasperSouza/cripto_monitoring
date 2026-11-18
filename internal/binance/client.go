@@ -10,6 +10,10 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+
 	"github.com/financial/marketdata/internal/metrics"
 	"github.com/financial/marketdata/internal/normalizer"
 	"github.com/financial/marketdata/internal/publisher"
@@ -21,6 +25,8 @@ const (
 	readTimeout     = 75 * time.Second
 	writeWait       = 10 * time.Second
 )
+
+var tracer = otel.Tracer("gateway")
 
 // Client maintains a resilient connection to the Binance public WebSocket
 // API and forwards normalized trades to a Publisher.
@@ -167,9 +173,24 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) error {
 		}
 		c.metrics.SetLastEventTimeMs(trade.GetEventTime())
 
-		if err := c.publisher.Publish(ctx, trade); err != nil {
+		publishStart := time.Now()
+		publishCtx, span := tracer.Start(ctx, "gateway.publish")
+		publishErr := c.publisher.Publish(publishCtx, trade)
+		span.SetAttributes(
+			attribute.String("symbol", trade.GetSymbol()),
+			attribute.Int64("trade_id", trade.GetTradeId()),
+			attribute.Float64("event_age_ms", float64(time.Now().UnixMilli()-trade.GetEventTime())),
+		)
+		if publishErr != nil {
+			span.RecordError(publishErr)
+			span.SetStatus(codes.Error, publishErr.Error())
+		}
+		span.End()
+		c.metrics.ObservePublishLatency(float64(time.Since(publishStart).Milliseconds()))
+		c.metrics.ObserveEventAge(float64(time.Now().UnixMilli() - trade.GetEventTime()))
+		if publishErr != nil {
 			c.metrics.PublishErrors()
-			c.logger.Error("publish failed", "error", err, "symbol", trade.GetSymbol(), "trade_id", trade.GetTradeId())
+			c.logger.Error("publish failed", "error", publishErr, "symbol", trade.GetSymbol(), "trade_id", trade.GetTradeId())
 			continue
 		}
 		c.metrics.MessagesPublished()

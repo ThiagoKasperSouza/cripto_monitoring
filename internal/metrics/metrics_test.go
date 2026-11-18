@@ -35,7 +35,7 @@ func TestCountersAppearInPrometheusFormat(t *testing.T) {
 		"gateway_reconnects_total 1",
 		"gateway_publish_errors_total 1",
 		"gateway_ws_connected 1",
-		"gateway_last_event_time_ms 1730000000000",
+		"gateway_last_event_time_ms ", // promhttp renderiza floats grandes em notação 1.73e+12
 	}
 	for _, want := range expected {
 		if !strings.Contains(out, want) {

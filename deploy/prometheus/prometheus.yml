@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Gateway de aquisição (Go) — roda no host, não em container
+  - job_name: rtd-gateway
+    static_configs:
+      - targets: ["host.docker.internal:9090"]
+
+  # BFF (Go)
+  - job_name: rtd-bff
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+
+  # Core de mercado (Java) — endpoint /metrics via Micrometer
+  - job_name: rtd-core
+    static_configs:
+      - targets: ["host.docker.internal:8081"]

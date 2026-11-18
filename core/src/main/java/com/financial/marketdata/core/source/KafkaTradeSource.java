@@ -1,6 +1,7 @@
 package com.financial.marketdata.core.source;
 
 import com.financial.marketdata.core.dedup.DedupStore;
+import com.financial.marketdata.core.metrics.CoreMetrics;
 import com.financial.marketdata.v1.TickerResponse;
 import java.util.function.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -112,6 +113,7 @@ public final class KafkaTradeSource implements TradeSource {
                 @Override
                 public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
                     rebalanceCount.incrementAndGet();
+                    CoreMetrics.rebalances(1);
                     assignedPartitions = Set.of();
                     LOGGER.info("partitions revoked: " + partitions);
                 }
@@ -119,6 +121,7 @@ public final class KafkaTradeSource implements TradeSource {
                 @Override
                 public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
                     rebalanceCount.incrementAndGet();
+                    CoreMetrics.rebalances(1);
                     assignedPartitions = Set.copyOf(partitions);
                     LOGGER.info("partitions assigned: " + partitions);
                 }
@@ -138,6 +141,7 @@ public final class KafkaTradeSource implements TradeSource {
                 ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(200));
                 for (ConsumerRecord<String, byte[]> record : records) {
                     consumed.incrementAndGet();
+                    CoreMetrics.tradesConsumed(1);
                     handleRecord(record.key(), record.value());
                 }
             } catch (WakeupException e) {
@@ -163,6 +167,7 @@ public final class KafkaTradeSource implements TradeSource {
             trade = TickerResponse.parseFrom(value);
         } catch (Exception e) {
             parseErrors.incrementAndGet();
+            CoreMetrics.parseErrors();
             LOGGER.warning("dropping record with unparseable protobuf payload: " + e);
             return false;
         }
@@ -170,12 +175,14 @@ public final class KafkaTradeSource implements TradeSource {
         String symbol = (key != null && !key.isBlank()) ? key : trade.getSymbol();
         if (symbol.isBlank()) {
             parseErrors.incrementAndGet();
+            CoreMetrics.parseErrors();
             LOGGER.warning("dropping record without symbol (key and payload both empty)");
             return false;
         }
 
         if (!dedup.markProcessed(symbol + ":" + trade.getTradeId())) {
             duplicatesDropped.incrementAndGet();
+            CoreMetrics.duplicatesDropped();
             return false;
         }
 
@@ -190,6 +197,7 @@ public final class KafkaTradeSource implements TradeSource {
             }
         }
         dispatched.incrementAndGet();
+        CoreMetrics.dispatched();
         return true;
     }
 

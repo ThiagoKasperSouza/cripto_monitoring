@@ -1,0 +1,107 @@
+{
+  "uid": "market-data-overview",
+  "title": "Market Data — Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Throughput — trades in/s vs published/s",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(gateway_messages_received_total[1m])", "legendFormat": "gateway in/s", "refId": "A" },
+        { "expr": "rate(gateway_messages_published_total[1m])", "legendFormat": "gateway published/s", "refId": "B" },
+        { "expr": "rate(core_trades_consumed_total[1m])", "legendFormat": "core consumed/s", "refId": "C" },
+        { "expr": "rate(bff_messages_sent_total[1m])", "legendFormat": "bff → browser msgs/s", "refId": "D" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Latência de publish no Kafka (p50 / p95 / p99)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(gateway_publish_latency_ms_bucket[5m])))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(gateway_publish_latency_ms_bucket[5m])))", "legendFormat": "p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(gateway_publish_latency_ms_bucket[5m])))", "legendFormat": "p99", "refId": "C" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Publish errors (5m)",
+      "gridPos": { "x": 0, "y": 8, "w": 6, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [ { "expr": "increase(gateway_publish_errors_total[5m])", "legendFormat": "errors", "refId": "A" } ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Duplicados descartados (dedup) /5m",
+      "gridPos": { "x": 6, "y": 8, "w": 6, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "orange", "value": 100 }, { "color": "red", "value": 1000 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [ { "expr": "increase(core_duplicates_dropped_total[5m])", "legendFormat": "duplicados", "refId": "A" } ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Streams gRPC ativos no core",
+      "gridPos": { "x": 12, "y": 8, "w": 6, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [ { "expr": "core_grpc_streams_active", "legendFormat": "streams", "refId": "A" } ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Clientes WebSocket no BFF",
+      "gridPos": { "x": 18, "y": 8, "w": 6, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [ { "expr": "bff_ws_connections", "legendFormat": "ws clients", "refId": "A" } ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Dedup — duplicados/s vs dispatched/s",
+      "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        { "expr": "rate(core_duplicates_dropped_total[1m])", "legendFormat": "duplicados descartados/s", "refId": "A" },
+        { "expr": "rate(core_dispatched_total[1m])", "legendFormat": "trades entregues/s", "refId": "B" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Slow client disconnects (RESOURCE_EXHAUSTED)",
+      "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "increase(core_slow_client_disconnects_total[1h])", "legendFormat": "disconnects", "refId": "A" } ]
+    }
+  ]
+}

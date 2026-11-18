@@ -27,6 +27,7 @@ import (
 	"github.com/financial/marketdata/internal/binance"
 	"github.com/financial/marketdata/internal/metrics"
 	"github.com/financial/marketdata/internal/publisher"
+	"github.com/financial/marketdata/internal/tracing"
 )
 
 func main() {
@@ -47,6 +48,12 @@ func run() error {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
+	shutdownTracing, err := tracing.Setup("gateway")
+	if err != nil {
+		return fmt.Errorf("tracing: %w", err)
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
 
 	streams := make([]string, 0)
 	for _, s := range strings.Split(*symbolsFlag, ",") {
