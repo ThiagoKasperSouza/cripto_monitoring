@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cada job aqui é espelhado por um alvo do Makefile, então o MESMO pipeline
+# roda localmente (make ci / make install-hooks) sem precisar de servidor.
+
+jobs:
+  go:
+    name: Gateway (Go) — vet, build, test -race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test (race detector)
+        run: go test -race -count=1 ./...
+
+  java:
+    name: Core (Java 21) — test + package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Test
+        run: mvn -B clean test
+        working-directory: core
+
+      - name: Package (shade)
+        run: mvn -B -DskipTests package
+        working-directory: core
+
+  contract:
+    name: Contrato protobuf — sem drift entre .proto e bindings Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install protoc 29.1
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '29.1'
+
+      - name: Install Go protobuf plugins (pinned)
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.5
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Regenerate Go bindings and fail on diff
+        run: |
+          protoc -I=proto --go_out=. --go_opt=module=github.com/financial/marketdata \
+                          --go-grpc_out=. --go-grpc_opt=module=github.com/financial/marketdata \
+                          proto/market_data.proto
+          git diff --exit-code -- v1/ || \
+            (echo "::error::v1/ está desatualizado — rode 'make proto' e commite" && exit 1)
+
+      - name: Verify Java generated sources compile from ../proto
+        run: mvn -B -q clean compile
+        working-directory: core

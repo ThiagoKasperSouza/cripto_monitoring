@@ -9,7 +9,6 @@ package metrics
 import (
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"sync/atomic"
 )
@@ -53,6 +52,20 @@ func (r *Registry) Handler() http.Handler {
 	return mux
 }
 
+type metricKind struct {
+	name string
+	kind string // "counter" or "gauge", per Prometheus exposition format
+}
+
+var metricKinds = []metricKind{
+	{"gateway_messages_received_total", "counter"},
+	{"gateway_messages_published_total", "counter"},
+	{"gateway_parse_errors_total", "counter"},
+	{"gateway_reconnects_total", "counter"},
+	{"gateway_ws_connected", "gauge"},
+	{"gateway_last_event_time_ms", "gauge"},
+}
+
 func (r *Registry) render() string {
 	values := map[string]int64{
 		"gateway_messages_received_total":  r.messagesReceived.Load(),
@@ -62,14 +75,12 @@ func (r *Registry) render() string {
 		"gateway_ws_connected":             r.wsConnected.Load(),
 		"gateway_last_event_time_ms":       r.lastEventTimeMs.Load(),
 	}
-	keys := make([]string, 0, len(values))
-	for k := range values {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	// Regression (Fase 1): *_total metrics were exposed as `gauge`.
+	// Prometheus clients treat *_total as counters; the TYPE line must say
+	// counter or rate()/increase() queries silently misbehave.
 	var sb strings.Builder
-	for _, k := range keys {
-		fmt.Fprintf(&sb, "# TYPE %s gauge\n%s %d\n", k, k, values[k])
+	for _, m := range metricKinds {
+		fmt.Fprintf(&sb, "# TYPE %s %s\n%s %d\n", m.name, m.kind, m.name, values[m.name])
 	}
 	return sb.String()
 }

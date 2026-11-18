@@ -37,17 +37,21 @@ type binanceTradeEvent struct {
 	IsBuyerMarketMaker bool            `json:"m"`
 }
 
-// parseIDFromRaw decodes an ID that may be a JSON number, a JSON string or
-// absent (nil raw message -> 0).
+// parseIDFromRaw decodes an ID that may be a JSON number, a JSON string,
+// JSON null or absent (nil raw message -> 0).
+//
+// Regression (Fase 1): a frame carrying `"b": null` used to fall through to
+// strconv.ParseInt("null"), the error propagated and the WHOLE trade frame
+// was silently dropped. JSON null must be treated as "absent" (0).
 func parseIDFromRaw(raw json.RawMessage) (int64, error) {
 	if len(raw) == 0 {
 		return 0, nil
 	}
 	s := strings.TrimSpace(string(raw))
-	s = strings.Trim(s, `"`)
-	if s == "" {
+	if s == "" || s == "null" {
 		return 0, nil
 	}
+	s = strings.Trim(s, `"`)
 	id, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid order id %q: %w", s, err)
@@ -61,7 +65,14 @@ func parseIDFromRaw(raw json.RawMessage) (int64, error) {
 func ExtractTradePayload(frame []byte) (json.RawMessage, error) {
 	var env combinedStreamEnvelope
 	if err := json.Unmarshal(frame, &env); err == nil && len(env.Data) > 0 {
-		return env.Data, nil
+		payload := json.RawMessage(strings.TrimSpace(string(env.Data)))
+		if string(payload) == "null" {
+			// Regression (Fase 1): `"data": null` passed len()>0 and reached
+			// NormalizeTrade as the literal bytes "null". Reject it here with
+			// a clear error instead of relying on downstream validation.
+			return nil, errors.New("envelope payload is JSON null")
+		}
+		return payload, nil
 	}
 	// Not an envelope: assume it is a bare trade frame.
 	var probe map[string]json.RawMessage

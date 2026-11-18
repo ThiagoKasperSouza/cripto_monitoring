@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Pre-push hook: roda o mesmo pipeline da CI antes de cada push.
+# Instale com: make install-hooks
+# Pule pontualmente com: git push --no-verify
+set -euo pipefail
+
+echo "[pre-push] rodando 'make ci' (mesmo pipeline da CI: vet + test -race + mvn clean verify)..."
+if ! make ci; then
+  echo
+  echo "[pre-push] FALHOU — push abortado. Rode 'make ci' localmente, corrija, e tente de novo."
+  echo "[pre-push] para pular conscientemente: git push --no-verify"
+  exit 1
+fi
+echo "[pre-push] OK"

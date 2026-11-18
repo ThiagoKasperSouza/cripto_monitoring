@@ -58,6 +58,13 @@ func (c *Client) WithEndpoint(endpoint string) *Client {
 	return c
 }
 
+// WithBackoff overrides the reconnection backoff strategy (used by tests to
+// avoid multi-second waits).
+func (c *Client) WithBackoff(b *Backoff) *Client {
+	c.backoff = b
+	return c
+}
+
 // StreamURL returns the full combined-stream URL (exposed for tests/logging).
 func (c *Client) StreamURL() string {
 	return fmt.Sprintf("%s?streams=%s", c.endpoint, strings.Join(c.streams, "/"))
