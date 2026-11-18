@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RTD · Real-Time Dash — Market Data</title>
+  <meta name="description" content="Real-time market data dashboard — Binance spot, via RTD pipeline (Gateway → Redpanda → Core → BFF)" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f0b90b'/%3E%3Cpath d='M8 22V13l5 4 5-7 5 5 1-9' stroke='%230b0e11' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- Top navigation -->
+  <header class="topnav">
+    <div class="topnav-left">
+      <a class="brand" href="/">
+        <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="7" fill="#f0b90b"/>
+          <path d="M8 22V13l5 4 5-7 5 5 1-9" stroke="#0b0e11" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="brand-name">RTD</span>
+      </a>
+      <nav class="topnav-links" aria-label="primary">
+        <a href="#" class="active" aria-current="page">Spot</a>
+        <a href="#" title="Fase 3+ — fora do escopo inicial">Derivatives</a>
+        <a href="#" title="Fase 3+ — fora do escopo inicial">Assets</a>
+        <a href="#" title="Fase 3+ — fora do escopo inicial">Orders</a>
+        <a href="#" title="Fase 3+ — fora do escopo inicial">Rewards</a>
+        <a href="#" title="Fase 3+ — fora do escopo inicial">Earn</a>
+        <a href="#" title="Fase 3+ — fora do escopo inicial">More</a>
+      </nav>
+    </div>
+    <div class="topnav-right">
+      <div class="search-pill" role="button" tabindex="0" aria-label="Search pair">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <span>Search pair</span>
+        <kbd>/</kbd>
+      </div>
+      <button class="icon-btn" aria-label="Notifications" title="Notifications">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+      </button>
+      <button class="icon-btn" aria-label="Settings" title="Settings">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Pair bar: selector + price + 24h stats -->
+  <section class="pairbar" aria-label="pair selector and stats">
+    <div class="pair-left">
+      <button id="pairButton" class="pair-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="pairMenu">
+        <span class="pair-icons" id="pairIcons" aria-hidden="true">
+          <span class="coin coin-base" id="coinBase">B</span>
+          <span class="coin coin-quote">T</span>
+        </span>
+        <span class="pair-names">
+          <span class="pair-name"><span id="pairTitle">BTC/USDT</span>
+            <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+          </span>
+          <span class="pair-sub">Spot Trading</span>
+        </span>
+      </button>
+      <div id="pairMenu" class="pair-menu" role="listbox" hidden>
+        <div class="pair-menu-head">
+          <input id="pairFilter" type="text" placeholder="Filter pairs…" autocomplete="off" spellcheck="false" />
+        </div>
+        <ul id="pairList"></ul>
+      </div>
+    </div>
+
+    <div class="pair-quote">
+      <div id="lastPrice" class="last-price">—</div>
+      <div id="lastPriceUsd" class="last-price-usd">≈ $—</div>
+    </div>
+
+    <div class="pair-stats" aria-label="24h statistics">
+      <div class="stat"><span class="stat-label">24h Change</span><span class="stat-value" id="statChange">—</span></div>
+      <div class="stat"><span class="stat-label">24h High</span><span class="stat-value" id="statHigh">—</span></div>
+      <div class="stat"><span class="stat-label">24h Low</span><span class="stat-value" id="statLow">—</span></div>
+      <div class="stat"><span class="stat-label">24h Volume(<span id="statVolumeAsset">BTC</span>)</span><span class="stat-value" id="statVolume">—</span></div>
+    </div>
+
+    <button class="icon-btn more-btn" aria-label="More options" title="More">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+    </button>
+  </section>
+
+  <!-- Tabs -->
+  <nav class="tabs" aria-label="sections">
+    <button class="tab active">Price chart</button>
+    <button class="tab" title="Fase 3+ — fora do escopo inicial">Overview</button>
+    <button class="tab" title="Fase 3+ — fora do escopo inicial">Data</button>
+    <button class="tab" title="Fase 3+ — fora do escopo inicial">Analytics</button>
+  </nav>
+
+  <!-- Chart panel -->
+  <main class="chart-panel">
+    <div class="toolbar" aria-label="chart controls">
+      <div class="intervals" id="intervalGroup" role="group" aria-label="interval">
+        <button data-interval="1m" class="interval active">1M</button>
+        <button data-interval="3m" class="interval">3M</button>
+        <button data-interval="5m" class="interval">5M</button>
+        <button data-interval="15m" class="interval">15M</button>
+        <button data-interval="1h" class="interval">1H</button>
+        <button data-interval="4h" class="interval">4H</button>
+        <button data-interval="1d" class="interval">1D</button>
+      </div>
+      <span class="toolbar-sep" aria-hidden="true"></span>
+      <div class="chart-type" role="group" aria-label="chart type">
+        <button id="typeCandles" class="type-btn active" title="Candlesticks" aria-label="candles">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 4v3M9 17v3M6.5 7h5v10h-5zM15 2v4M15 18v4M12.5 6h5v12h-5z"/></svg>
+        </button>
+        <button id="typeLine" class="type-btn" title="Line" aria-label="line">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
+        </button>
+      </div>
+      <span class="toolbar-spacer"></span>
+      <div id="connBadge" class="conn-badge" role="status"><span class="dot"></span><span class="conn-text">Connecting…</span></div>
+    </div>
+
+    <div class="chart-wrap">
+      <div class="draw-rail" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15 15 4l4 4L8 19l-5 1z"/></svg>
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7a4.95 4.95 0 0 0-7-7l-7 7M9 12h6"/></svg>
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 20h16M6 16V8M10 16v-6M14 16V5M18 16v-8"/></svg>
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18l6-6 4 4 8-8"/></svg>
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 4h12M6 10h12M6 16h8"/></svg>
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21 3 12l9-9 9 9-9 9Z"/></svg>
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6"/><path d="M11 8v6M8 11h6"/></svg>
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5 12a7 7 0 0 1 7-7M12 19a7 7 0 0 0 7-7"/></svg>
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v-8M8 12h8M12 4v.01"/></svg>
+      </div>
+      <div id="chart" class="chart-canvas" role="img" aria-label="price chart"></div>
+      <div class="chart-brand" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="30" height="30"><rect width="32" height="32" rx="7" fill="#f0b90b"/><path d="M8 22V13l5 4 5-7 5 5 1-9" stroke="#0b0e11" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+    </div>
+
+    <div class="statusbar">
+      <span class="status-left">Market: Binance Spot · Source: RTD Gateway → Redpanda → Core → BFF</span>
+      <span class="status-right"><span id="tradeCount">0</span> trades · last event <span id="lastEventTime">—</span></span>
+    </div>
+  </main>
+
+  <!-- Toast -->
+  <div id="toast" class="toast" role="alert" hidden></div>
+
+  <script src="/vendor/lightweight-charts.standalone.production.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

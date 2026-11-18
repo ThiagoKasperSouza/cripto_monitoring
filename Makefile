@@ -50,6 +50,9 @@ core-kafka: ## empacota e roda o core consumindo market.trades com dedup Redis
 		--port 50051 --source kafka --brokers localhost:9092 --topic market.trades \
 		--group market-data-core --dedup redis --redis-addr localhost:6379
 
+bff: ## roda o BFF (UI em http://localhost:8080, /ws, proxies)
+	go run ./cmd/bff --listen :8080 --core-addr localhost:50051
+
 infra-up: ## sobe Redpanda (Kafka API) + Redis e cria o tópico market.trades
 	cd deploy && docker compose up -d
 

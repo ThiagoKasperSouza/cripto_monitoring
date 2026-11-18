@@ -1,5 +1,7 @@
 # Real-Time Dash — Market Data em Tempo Real (Binance)
 
+![RTD](image.png)
+
 Implementação em andamento do roadmap descrito em
 `Arquitetura RPC e Streaming de Dados em Tempo Real (Integração Binance).md`:
 
@@ -12,6 +14,12 @@ Implementação em andamento do roadmap descrito em
   como binário; core consome via `KafkaTradeSource` com **dedup
   `trade_id` via Redis** (SET NX PX) ou janela deslizante em memória;
   validado ponta a ponta ao vivo (Binance → gateway → Redpanda → core → gRPC).
+- ✅ **Fase 3** — BFF em Go (`cmd/bff`): downgrade gRPC → **WebSocket**
+  (`/ws?symbol=`), fan-out por símbolo para N browsers, proxies cache para
+  `ticker24h`/`klines` da Binance; **UI de trading estilo Binance**
+  (`http://localhost:8080`) com seletor de par que troca o gráfico ao vivo;
+  observabilidade: Prometheus + Grafana (dashboard provisionado) + Jaeger
+  (OTel nos saltos WS→Kafka e gRPC→WS).
 
 ## Layout
 
@@ -21,14 +29,20 @@ v1/                         # bindings Go gerados (protoc-gen-go)
 cmd/gateway/                # gateway de aquisição (Go)
 cmd/coreprobe/              # cliente gRPC de smoke test (Go → Java)
 cmd/loadprobe/              # gerador de carga sintética (soak test do caminho Kafka)
+cmd/bff/                    # BFF (Go): UI, /ws, proxies, /metrics
+  static/                   # SPA (candles + seletor de par, Lightweight Charts vendorizada)
 internal/binance/           # cliente WS + backoff/jitter
 internal/normalizer/        # JSON Binance → TickerResponse (validação)
 internal/publisher/         # sink dos trades (stdout + Kafka/Redpanda)
-internal/metrics/           # contadores/gauges + endpoint /metrics
+internal/metrics/           # métricas Prometheus (client_golang) + /metrics
+internal/tracing/           # OTel setup (OTLP/HTTP) compartilhado
 core/                       # serviço core gRPC (Java 21, Maven)
   src/.../core/source/      # TradeSource: SimulatedTradeSource, KafkaTradeSource
   src/.../core/dedup/       # DedupStore: InMemoryDedupStore, RedisDedupStore
-deploy/docker-compose.yml   # infra Fase 2: Redpanda + Redis + init do tópico
+  src/.../core/metrics/     # Micrometer → /metrics :8081
+deploy/docker-compose.yml   # Redpanda + Redis + Prometheus + Grafana + Jaeger
+deploy/grafana/             # datasource + dashboard "Market Data — Overview"
+deploy/prometheus/          # scrape config (gateway :9090, BFF :8080, core :8081)
 ```
 
 ## Fase 2 — Kafka (Redpanda) + dedup Redis
@@ -98,6 +112,74 @@ Notas de design:
   deduplicou todas (4800 chaves `dedup:trade:LOADTEST:*` no Redis), lag do
   grupo ≈ 0s após drenar, e `coreprobe` recebeu 100 trades ao vivo durante a
   produção. Catch-up de backlog: **4371 msgs em 8s** (partição 2).
+
+  produção. Catch-up de backlog: **4371 msgs em 8s** (partição 2).
+
+## Fase 3 — BFF, UI estilo Binance e Observabilidade
+
+Pré-requisitos: Docker com Compose + infra de pé (`make infra-up`).
+
+```bash
+make core-kafka     # core gRPC consumindo market.trades (porta 50051) + /metrics :8081
+make gateway-kafka  # gateway publicando no Redpanda                + /metrics :9090
+make bff            # BFF: UI + /ws + proxies                        + /metrics :8080
+
+# depois abra http://localhost:8080
+```
+
+Serviços e portas:
+
+| Serviço | URL | O que é |
+| :--- | :--- | :--- |
+| **UI (SPA embutida no BFF)** | http://localhost:8080 | Dashboard estilo Binance: candles + volume, seletor de par, stats 24h |
+| BFF `/api/symbols` | http://localhost:8080/api/symbols | pares aceitos pela UI e pelo `/ws` |
+| BFF `/api/klines` | `…?symbol=BTCUSDT&interval=1m&limit=300` | proxy cache (5s) do `/api/v3/klines` da Binance |
+| BFF `/api/ticker24h` | `…?symbol=BTCUSDT` | proxy cache (5s) do `/api/v3/ticker/24hr` |
+| BFF `/ws` | `ws://localhost:8080/ws?symbol=BTCUSDT` | trades via WebSocket (downgrade gRPC → WS) |
+| Prometheus | http://localhost:9093 | scrapes: gateway :9090, BFF :8080, core :8081 |
+| Grafana | http://localhost:3000 | dashboard **Market Data — Overview** (admin/admin, só dev local!) |
+| Jaeger | http://localhost:16686 | tracing OTLP do salto de protocolo (gateway → Kafka → core → BFF) |
+| Core `/metrics` | http://localhost:8081/metrics | trades consumidos/duplicados/despachados, streams ativos, disconnects |
+
+**UI** (baseada na tela de trading da Binance enviada como referência):
+
+- Seletor de par (BTC/USDT · ETH/USDT · BNB/USDT · SOL/USDT · XRP/USDT ·
+  DOGE/USDT, filtrável com `/` ou clicando): **trocar de par recarrega
+  candles, stats, watermark e assinatura WS**.
+- Candlesticks + volume embaixo (Lightweight Charts vendorizada em
+  `cmd/bff/static/vendor/`, Apache-2.0), 300 candles iniciais (`/api/klines`)
+  com atualização ao vivo a cada trade.
+- Header: preço com flash verde/vermelho, 24h Change, 24h High/Low, 24h
+  Volume — dados do `/api/ticker24h` (refresh 5s).
+- Conexão resiliente: badge Live/Reconnecting, backoff e **self-heal**
+  (refetch de klines após reconectar — fecha o gap); seleção persistida em
+  `localStorage`.
+- Toggle candles ⇄ linha; intervalos 1M…1D; contador de trades + horário do
+  último evento na statusbar.
+
+Notas de design:
+
+- **BFF em Go** (o doc previa "Node.js (NestJS) / Go"): reutiliza os stubs
+  gRPC Go e o pipeline de métricas. UI estática embutida com `go:embed` —
+  sem build step, sem CDN.
+- **Multiplexação**: 1 upstream `StreamTicker` por símbolo, fan-out para N
+  browsers; quando o último cliente sai, o stream upstream é cancelado.
+- **Consumidor lento no BFF**: fila de 256 mensagens por cliente; estourou →
+  WebSocket desconectado (a UI reconecta e refaz fetch — sem perda silenciosa).
+- **Observabilidade end-to-end**: métricas nos três destinos do Prometheus
+  (throughput, latência de publish com histogramas p50/p95/p99, dedup
+  dispatched/duplicates, disconnects, streams ativos) e spans OTel no
+  gateway (`gateway.publish`) e no BFF (`bff.upstream.recv`).
+- **Circuit Breaker**: ainda não aplicável — não há chamada síncrona REST no
+  caminho de dados; o proxy da Binance já tem timeout de 4s + cache com TTL.
+- **Verificado ao vivo** (2026-11-18): proxies com dados reais; UI trocando
+  BTC→ETH→BTC; badge Live; Prometheus com os 3 targets `up`; Grafana com o
+  dashboard provisionado; Jaeger com `gateway.publish` (ex:
+  `event_age_ms=156`) e `bff.upstream.recv`.
+- Pendências honestas: SSE não implementado (doc previa WS **ou** SSE — WS
+  escolhido); sem autenticação na UI/BFF (dev local); tabs Overview/Data/
+  Analytics decorativas; `admin/admin` do Grafana é só para dev; CI não
+  executa trading real.
 
 ## Pré-requisitos
 
