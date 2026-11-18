@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package marketdata.v1;
+
+option go_package = "github.com/financial/marketdata/v1;marketdatav1";
+option java_package = "com.financial.marketdata.v1";
+option java_multiple_files = true;
+
+// Serviço responsável pela distribuição de dados de mercado em tempo real.
+service MarketDataService {
+  // Estabelece um stream unilateral do servidor para o cliente enviando atualizações de ticker.
+  rpc StreamTicker (TickerRequest) returns (stream TickerResponse);
+}
+
+// Solicitante do stream de dados de mercado.
+message TickerRequest {
+  // Símbolo do ativo financeiro (ex: "BTCUSDT", "ETHUSDT").
+  string symbol = 1;
+
+  // Parâmetro opcional para solicitar agregação de dados no lado do servidor (em ms).
+  // 0 (default) = sem agregação, cada trade é repassado imediatamente.
+  int32 aggregation_interval_ms = 2;
+}
+
+// Resposta contendo os dados de cada negócio (Trade) processado.
+message TickerResponse {
+  // Símbolo do ativo correspondente.
+  string symbol = 1;
+
+  // Preço da transação codificado como string para evitar perdas de precisão de ponto flutuante.
+  string price = 2;
+
+  // Quantidade negociada na transação.
+  string quantity = 3;
+
+  // Timestamp do evento gerado pela exchange (em milissegundos UTC).
+  int64 event_time = 4;
+
+  // Identificador único da transação provido pela Binance (Idempotência/Rastreabilidade).
+  int64 trade_id = 5;
+
+  // Identificador do comprador (Buyer Order ID) para fins de auditoria.
+  int64 buyer_order_id = 6;
+
+  // Identificador do vendedor (Seller Order ID) para fins de auditoria.
+  int64 seller_order_id = 7;
+
+  // Indica se o comprador foi o criador da ordem (Market Maker).
+  bool is_buyer_market_maker = 8;
+}

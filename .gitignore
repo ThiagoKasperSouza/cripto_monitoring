@@ -1,0 +1,10 @@
+# Build artifacts
+/core/target/
+/gateway
+/coreprobe
+*.log
+
+# Editors/OS
+.idea/
+.vscode/
+.DS_Store
