@@ -36,8 +36,22 @@ proto: ## regenera os bindings Go a partir de proto/market_data.proto
 gateway: ## roda o gateway (BTCUSDT,ETHUSDT, métricas em :9090)
 	go run ./cmd/gateway --symbols BTCUSDT,ETHUSDT --metrics-addr :9090
 
-core: ## empacota e roda o serviço core gRPC (porta 50051)
+gateway-kafka: ## sobe o gateway publicando no tópico market.trades
+	go run ./cmd/gateway --symbols BTCUSDT,ETHUSDT --metrics-addr :9090 --kafka-brokers localhost:9092 --kafka-topic market.trades
+
+core: ## empacota e roda o serviço core gRPC (Fase 1, fonte simulada)
 	cd core && mvn -q -B -DskipTests package && java -jar target/core-1.0.0-SNAPSHOT.jar --port 50051
+
+core-kafka: ## empacota e roda o core consumindo market.trades com dedup Redis
+	cd core && mvn -q -B -DskipTests package && java -jar target/core-1.0.0-SNAPSHOT.jar \
+		--port 50051 --source kafka --brokers localhost:9092 --topic market.trades \
+		--group market-data-core --dedup redis --redis-addr localhost:6379
+
+infra-up: ## sobe Redpanda (Kafka API) + Redis e cria o tópico market.trades
+	cd deploy && docker compose up -d
+
+infra-down: ## derruba a infra e remove volumes
+	cd deploy && docker compose down -v
 
 probe: ## smoke test Go→Java: BTCUSDT, 10 mensagens
 	go run ./cmd/coreprobe --symbol BTCUSDT --count 10

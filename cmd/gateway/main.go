@@ -7,8 +7,8 @@
 //     marketdata.v1 (TickerResponse).
 //   - Emitir métricas de latência/estado em /metrics (default :9090).
 //
-// A entrega para o barramento (Kafka) chega na Fase 2; até lá os trades
-// normalizados são publicados como linhas JSON no stdout via Publisher.
+// A entrega para o barramento (Kafka/Redpanda) é configurada por
+// --kafka-brokers; sem brokers, os trades vão como JSON lines no stdout.
 package main
 
 import (
@@ -42,6 +42,8 @@ func main() {
 func run() error {
 	symbolsFlag := flag.String("symbols", "BTCUSDT,ETHUSDT", "comma-separated list of symbols to stream (e.g. BTCUSDT,ETHUSDT)")
 	metricsAddr := flag.String("metrics-addr", ":9090", "address for the /metrics and /healthz HTTP endpoints (empty to disable)")
+	kafkaBrokers := flag.String("kafka-brokers", "", "comma-separated Kafka/Redpanda brokers (e.g. localhost:9092). Empty = stdout log publisher")
+	kafkaTopic := flag.String("kafka-topic", "market.trades", "topic to publish normalized trades to")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -83,8 +85,21 @@ func run() error {
 		}()
 	}
 
-	pub := publisher.NewLogPublisher(os.Stdout)
+	var pub publisher.Publisher
+	var mode string
+	if *kafkaBrokers != "" {
+		brokers := strings.Split(*kafkaBrokers, ",")
+		kafkaPub, err := publisher.NewKafkaPublisher(brokers, *kafkaTopic)
+		if err != nil {
+			return fmt.Errorf("kafka publisher: %w", err)
+		}
+		pub, mode = kafkaPub, "kafka topic="+*kafkaTopic
+	} else {
+		pub = publisher.NewLogPublisher(os.Stdout)
+		mode = "stdout"
+	}
 	defer func() { _ = pub.Close() }()
+	logger.Info("publisher configured", "mode", mode)
 
 	client := binance.NewClient(streams, pub, registry, logger)
 	return client.Run(ctx)

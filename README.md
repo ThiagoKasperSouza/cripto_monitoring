@@ -1,20 +1,17 @@
 # Real-Time Dash — Market Data em Tempo Real (Binance)
 
-Implementação da **Fase 1 do roadmap** descrito em
+Implementação em andamento do roadmap descrito em
 `Arquitetura RPC e Streaming de Dados em Tempo Real (Integração Binance).md`:
 
-- ✅ Contrato `proto/market_data.proto` homologado (`marketdata.v1`) — base da
-  geração de código de **Go** e **Java** a partir de uma única fonte de verdade.
-- ✅ **Camada 1 (Aquisição Externa)** — Market Data Gateway em **Go**:
-  WebSocket resiliente com a Binance, reconexão automática com
-  *Exponential Backoff + Jitter*, parsing/validação de JSON → Protobuf e
-  métricas em `/metrics`.
-- ✅ **Camada 3 (Serviço Core de Mercado)** — iniciada em **Java** (gRPC sobre
-  HTTP/2): interface `StreamTicker` (Server-Side Streaming) implementada,
-  executando contra um `TradeSource` sintético. Kafka (Fase 2) substituirá a
-  fonte sem mudar o contrato.
-- ✅ Cliente de smoke test Go↔Java (`cmd/coreprobe`) validando a
-  interoperabilidade do contrato entre as duas linguagens.
+- ✅ **Fase 1** — Contrato `proto/market_data.proto` homologado
+  (`marketdata.v1`); **Gateway de Aquisição (Camada 1, Go)** com WebSocket
+  resiliente + backoff/jitter e parsing JSON → Protobuf; **Serviço Core
+  (Camada 3, Java)** com `StreamTicker` (Server-Side Streaming).
+- ✅ **Fase 2** — Barramento de eventos (Redpanda, API Kafka) com tópico
+  `market.trades` (3 partições, chave = symbol); gateway publica Protobuf
+  como binário; core consome via `KafkaTradeSource` com **dedup
+  `trade_id` via Redis** (SET NX PX) ou janela deslizante em memória;
+  validado ponta a ponta ao vivo (Binance → gateway → Redpanda → core → gRPC).
 
 ## Layout
 
@@ -25,15 +22,72 @@ cmd/gateway/                # gateway de aquisição (Go)
 cmd/coreprobe/              # cliente gRPC de smoke test (Go → Java)
 internal/binance/           # cliente WS + backoff/jitter
 internal/normalizer/        # JSON Binance → TickerResponse (validação)
-internal/publisher/         # sink dos trades (stdout; Kafka chega na Fase 2)
+internal/publisher/         # sink dos trades (stdout + Kafka/Redpanda)
 internal/metrics/           # contadores/gauges + endpoint /metrics
 core/                       # serviço core gRPC (Java 21, Maven)
+  src/.../core/source/      # TradeSource: SimulatedTradeSource, KafkaTradeSource
+  src/.../core/dedup/       # DedupStore: InMemoryDedupStore, RedisDedupStore
+deploy/docker-compose.yml   # infra Fase 2: Redpanda + Redis + init do tópico
 ```
+
+## Fase 2 — Kafka (Redpanda) + dedup Redis
+
+Pré-requisitos: Docker com Compose.
+
+```bash
+# 1) infra: Redpanda (API Kafka) + Redis + tópico market.trades (3 partições)
+make infra-up
+
+# 2) terminal A: gateway publicando Protobuf no tópico
+make gateway-kafka
+
+# 3) terminal B: core consumindo do tópico com dedup Redis
+make core-kafka
+
+# 4) terminal C: ver o stream ao vivo (Binance → gateway → Redpanda → core → gRPC)
+go run ./cmd/coreprobe --symbol BTCUSDT --count 10
+```
+
+Verificar dedup no Redis:
+
+```bash
+docker exec rtd-redis redis-cli --scan --pattern 'dedup:trade:*' | wc -l
+docker exec rtd-redis redis-cli GET dedup:trade:BTCUSDT:6877905368   # "1"
+```
+
+Parar a infra (remove volumes):
+
+```bash
+make infra-down
+```
+
+Notas de design:
+
+- **Chave da mensagem = `symbol`** (não `trade_id`, divergindo da redação do
+  doc): trade_id é único por trade e espalharia trades do mesmo ativo em
+  partições arbitrárias; symbol garante que trades do mesmo ativo caem na
+  mesma partição, preservando a ordem cronológica — o objetivo declarado no
+  próprio documento. trade_id segue como header e como chave de dedup.
+- **Dedup**: `SET dedup:trade:{symbol}:{trade_id} 1 NX PX 300000` (atômico).
+  Chave existe → duplicado → descarte silencioso. TTL default 5min (flag
+  `--dedup-ttl-ms`). Em memória (desenvolvimento): janela deslizante com TTL
+  e teto de entradas.
+- **Falha do Redis**: consumidor faz *fail-open* — aceita o evento e loga
+  warning (1 por 5s) ao invés de congelar os dashboards. Decisão documentada
+  no javadoc de `RedisDedupStore`; inverta para fail-closed se preferir.
+- **Backpressure end-to-end** (cliente gRPC lento → HTTP/2 → gRPC buffer →
+  fonte): hoje a fonte drena o Kafka sem propagar lentidão até o consumer.
+  Mitigação parcial: retenção 24h no tópico + consumer lag visível; melhoria
+  definitiva entra na Fase 3 (per-call ready handlers + bounded buffer).
+- Teste de **carga/soak** formal e validação sob picos de volatilidade ainda
+  não foi feito (a resiliência a quedas do WS está coberta por testes de
+  reconexão do gateway).
 
 ## Pré-requisitos
 
 - Go ≥ 1.23, Java 21, Maven ≥ 3.8, `protoc` ≥ 29 (apenas para regenerar os bindings Go)
 - Rede com acesso a `stream.binance.com`
+- Fase 2: Docker + Compose (Redpanda + Redis locais)
 
 ## Regenerar bindings
 
@@ -77,7 +131,7 @@ make test-go     # go test -race ./...
 make test-java   # (cd core && mvn test)
 ```
 
-Cobertura automatizada atual (Fase 1):
+Cobertura automatizada atual (Fase 1 + Fase 2):
 
 | Componente | Testes | O que cobre |
 | :--- | :--- | :--- |
@@ -85,16 +139,20 @@ Cobertura automatizada atual (Fase 1):
 | `internal/normalizer` | `normalizer_test.go` | Envelope `stream+data`, frame cru, validação de preço/qty/trade_id, variantes de `b`/`a` (spot ausente, futures string/número) |
 | | `regression_test.go` | Regressão: `b:null`/`a:null` não podem derrubar o frame; `"data":null` no envelope é rejeitado; frame `null` nunca vira trade |
 | `internal/publisher` | `publisher_test.go` | Linha JSON válida com todos os campos do contrato |
+| | `kafka_test.go` | Chave = symbol, headers `trade_id`/`event_time`, round-trip protobuf, validação de args (sem broker) |
 | `internal/metrics` | `metrics_test.go` | Formato Prometheus, `/healthz`, contadores |
 | | `regression_test.go` | Regressão: métricas `*_total` expostas com `# TYPE ... counter` (eram `gauge`) |
 | `core` (Java) | `StreamTickerTest` | Streaming via gRPC in-process, símbolo vazio/intervalo inválido → `INVALID_ARGUMENT`, janelas VWAP |
 | | `SimulatedTradeSourceTest` | Emissão periódica, `trade_id` monotônico, isolamento por símbolo, unsubscribe/close param a emissão |
 | | `TradeAggregatorTest` | VWAP exato da janela, janela vazia não emite, janelas separadas geram buckets separados |
 | | `RegressionTest` | Regressão: mensagens top-level em `com.financial.marketdata.v1` (falta de `java_multiple_files` quebrou todo o compile); classe externa `MarketData` sem mensagens aninhadas |
+| | `KafkaTradeSourceTest` | `handleRecord` sem broker: desserialização protobuf, dedup (1ª aceita/2ª descartada), `trade_id` igual em símbolos distintos **não** é duplicata, payload inválido descartado, fallback de symbol pela payload quando key nula |
+| | `InMemoryDedupStoreTest` | `markProcessed` idempotente, TTL expira, teto de entradas (FIFO determinístico por sequência), escopo por símbolo |
+| | `RedisDedupStoreTest` | Contra Redis real (`SET NX PX` + TTL). **Gated por env** `REDIS_ADDR` (ex: `REDIS_ADDR=localhost:6379 make test-java`); sem a env, os testes são pulados — CI não sobe Redis |
 
-Não cobertos (dependem de ambiente real): entrega efetiva na Binance (smoke
-manual, ver README) e carga/rate limit. Fase 2 adicionará testes de dedup
-`trade_id`/Redis e de falha do Kafka.
+Total Java: **27 testes**. Não cobertos (dependem de ambiente real): entrega
+efetiva na Binance (smoke manual, ver README), carga/rate limit e falhas do
+Kafka (ex: `NotLeaderOrFollower`, rebalance de partições em grupo).
 
 ## CI/CD
 

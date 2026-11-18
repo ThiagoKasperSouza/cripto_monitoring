@@ -1,0 +1,67 @@
+name: real-time-dash
+
+# Infra local da Fase 2: barramento de eventos + cache de dedup.
+# Redpanda é Kafka-compatível (API Kafka) e roda single-node sem ZooKeeper —
+# o doc permite "Apache Kafka / Redpanda" para o barramento.
+#
+#   make infra-up     # sobe tudo e cria o tópico market.trades (3 partições)
+#   make infra-down   # derruba e remove volumes
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.7
+    container_name: rtd-redpanda
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+    ports:
+      - "9092:9092"   # Kafka API
+      - "9644:9644"   # Admin API
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.*true|Controller ID: [0-9]+' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.7
+    container_name: rtd-redpanda-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    # Compartilha o namespace de rede do redpanda: rpk fala diretamente
+    # em localhost:9092, sem depender de DNS/hairpin entre containers.
+    network_mode: service:redpanda
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        rpk topic create market.trades --brokers localhost:9092 -p 3 -r 1 || true
+        rpk topic describe market.trades --brokers localhost:9092
+
+  redis:
+    image: redis:7-alpine
+    container_name: rtd-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  redpanda-data:
